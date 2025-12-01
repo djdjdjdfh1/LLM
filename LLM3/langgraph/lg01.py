@@ -1,0 +1,123 @@
+import os
+import warnings
+warnings.filterwarnings("ignore")
+
+from typing import List, Literal
+from typing_extensions import TypedDict
+from dotenv import load_dotenv
+
+# LangChain 관련 임포트
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
+
+# LangGraph 관련 임포트
+from langgraph.graph import StateGraph, START, END
+
+# 환경설정
+load_dotenv()
+
+if not os.environ.get('OPENAI_API_KEY'):
+    raise ValueError('key check...')
+
+# state 정의
+# TypeDict 상태 스키마 정의
+class RAGState(TypedDict):
+    '''RAG 에이전트의 상태 스키마'''
+    question : str
+    documents: List[Document]
+    context : str
+    answer : str
+
+initial_state : RAGState = {
+    'question' : 'RAG란 무엇인가요?',
+    'documents' : [],
+    'context':'',
+    'answer':''
+}    
+print(f'초기상태 : {initial_state}')
+
+# 상태 업데이트(시뮬레이션)
+state = initial_state.copy()
+
+# 1. 검색 노드가 문서를 추가
+state['documents'] = [
+    Document(page_content='RAG는 검색 증강 생성입니다.', metadata={'source':'wiki'}),
+    Document(page_content='RAG는 LLM의 한계를 극복합니다.', metadata={'source':'blog'}),
+]
+
+# 2. 생성 노드가 답변을 생성
+state['context'] = '\n'.join([ doc.page_content for doc in state['documents']])
+state['answer'] = 'RAG는 검색 증강 생성 기술입니다.'
+
+# node 함수 정의
+# 노드는 state를 입력받아서 dict를 반환
+# 반환된 dict가 state와 병합
+
+class SimpleState(TypedDict):
+    '''단순화된 형태'''
+    question : str
+    documents : List[Document]
+    answer: str
+
+# 노드 함수 1 : 검색 노드
+def retrieve_node(state:SimpleState)->dict:
+    '''검색노드 : 질문을 기반으로 관련 문서를 검색'''
+    question = state['question']
+    print(f'검색노드 실행 : {question}')
+    # 시뮬레이션 : 실제는 retriever.invoke(question) 사용
+    mock_documents = [
+        Document(page_content='', metadata={}),
+        Document(page_content='', metadata={})
+    ]
+    return {'document':mock_documents}
+
+# 노드 함수2: 생성 노드
+def generate_node(state:SimpleState) -> dict:
+    '''생성노드 : 검색된 문서를 기반으로 답변 생성'''
+    documents = state['documents']
+    # 시뮬레이션 : 실제로는 LLM 호출
+    context: '\n'.join([doc.page_content for doc in documents])
+    mock_answer = f'문서기반 답변: {context[:50]}'
+    return {'answer' : mock_answer}
+
+# 노드 실행 시뮬레이션
+state:SimpleState = {'question' : 'LangGraph란', 'documents': [], 'answer': ''}
+print(f"[초기상태] question = {state['question']}, docs = {len(state['documents'])}")
+
+# step1 : 검색노드 실행
+update1 = retrieve_node(state)
+state.update(update1)
+
+# step2 : 생성노드 실행
+update2 = generate_node(state)
+state.update(update2)
+
+print('노드실행 완료')
+
+# Edge 정의 및 조건부 분기
+
+# 조건부 엣지를 위한 결정 함수
+# Literal 타입힌트 반드시 이 값들 중에서 하나를 반환해야 한다는 의미
+def decide_next_step(state:dict) -> Literal['generate','web_search']:
+    '''문서 관련성에 따라 다음 단계 결정'''
+    documents = state.get('document', [])
+    if documents and len(documents) > 0:
+        print(f'문서있음 --> generate 노드로 이동')
+        return 'generate'
+    else:
+        print(f'문서없음 --> web_search 노드로 이동')
+        return 'web_search'
+
+# 케이스 1 : 문서가 있는 경우
+start_with_docs = {'documents' : ['doc1', 'doc2']}
+next_node = decide_next_step(start_with_docs)
+print(f'다음노드 : {next_node}')
+
+start_without_docs = {'documents' : []}
+next_node = decide_next_step(start_without_docs)
+print(f'다음노드 : {next_node}')
+
