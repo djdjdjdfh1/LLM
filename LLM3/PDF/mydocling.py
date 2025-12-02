@@ -8,18 +8,28 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-from typing import TypedDict, List
+from typing import List, Literal
+from dotenv import load_dotenv
 
-# 공식문서의 내용 https://github.com/docling-project/docling
+load_dotenv()
+
+# powershell 에서 
+
+# setx HF_HUB_DISABLE_SYMLINKS 1
+
+# 터키널 종료하고 재 시작(VScode)
+
+
+# 공식문서의 내용  https://github.com/docling-project/docling
 # source = "https://arxiv.org/pdf/2408.09869"  # document per local path or URL
 # converter = DocumentConverter()
 # result = converter.convert(source)
 # print(result.document.export_to_markdown())  # output: "## Docling Technical Report[...]"
 
-# # Docling 변환기능
+# # Docling 변환기
 # converter = DocumentConverter()
-# # pdf -> docling Document 변환
-# file_path = r'C:/Users/playdata2/Desktop/LLM/LLM3/PDF/document_table.pdf'
+# # pdf -> Docling Document 변환
+# file_path = r'C:\2.Lecture\LLM2\LLM3\PDF\document_table.pdf'
 # result = converter.convert(file_path)
 # # markdown 추출(표 구조 보존)
 # markdown_content = result.document.export_to_markdown()
@@ -27,25 +37,26 @@ from typing import TypedDict, List
 
 class DoclingPDFLoader:
     '''Docling을 사용한 pdf 로더'''
-    def __init__(self, file_path:str):
+    def __init__(self,file_path:str):
         self.file_path = file_path
     def load(self) -> List[Document]:
-        '''PDF를 로드하고 Document 리스트로 변환'''
+        '''PDF를 로드하고 Document 리스트로 반환'''
         converter = DocumentConverter()
         result = converter.convert(self.file_path)
-        markdown_content = result.document
+        markdown_content = result.document.export_to_markdown()
+        # langchain의 Document 형식으로 변환
         documents = [
             Document(
                 page_content=markdown_content,
                 metadata={
-                    'source': self.file_path,
-                    'loader': 'docling',
-                    'format': 'markdown'
+                    'source':self.file_path,
+                    'loader':'docling',
+                    'format':'markdown'
                 }
             )
         ]
         return documents
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader    
 class SimplePDFLoader:
     '''기본 pdf 로더
     간단한 텍스트 추출에 적합
@@ -63,37 +74,74 @@ class SimplePDFLoader:
             doc.metadata['loader'] = 'pypdf'
         return documents
 
-# Step 1 일반적인 chaining을 이용한 Rag
-# 문서로딩
-# 청킹
-# 벡터DB
-# 리트리버
-# 사용자 질문에 대한 리트리버를 수행 context
-# context로 LLM 위한 프롬프트 작성
-# LLM에 전달해서 출력
-# LLM 정의
-# 체인
-# 실행
-
-# Step 2 랭그래프를 이용한 RAG
-
-# 스플리터
-korean_splitter = RecursiveCharacterTextSplitter(
+# 스플리터 
+korean_splitter =  RecursiveCharacterTextSplitter(
     chunk_size = 500,
     chunk_overlap = 100,
-    seperators=[
-        '\n##',     # 마크다운 2단계 헤더
-        '\n###',    # 마크다운 1단계 헤더
-        '\n\n',      
-        '\n',       
+    separators=[
+        '\n##'      # 마크다운 2단계 헤더
+        "\n###"     # 마크다운 3단계 헤더
+        '\n\n',
+        '\n',
         '다.',
-        '요',
+        '요.',
         '니다.',
         ' ',
-        '',  
+        '',        
     ],
     length_function = len,
-    is_separator_regex=False,  
+    is_seperator_regex=False
 )
 # 문서분할
 doc_chunks = korean_splitter.split_documents()
+
+# Step 1 일반적인 chaing을 이용한 RAG
+# 문서로딩
+file_path = r'C:/Users/playdata2/Desktop/LLM/LLM3/PDF/pdf_doc01.pdf'
+loader = DoclingPDFLoader(file_path)
+docs = loader.load()
+print(f"docs: {docs}")
+# 청킹
+doc_splits = korean_splitter.split_documents(docs)
+print(f"청킹수 : {len(docs)}")
+# 벡터DB
+# 리트리버
+from langchain_chroma import Chroma
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+vectorstore = Chroma.from_documents(
+    documents=doc_splits,
+    collection_name='crag_collection',
+    embedding=OpenAIEmbeddings(model='text-embedding-3-small')
+)
+retriever = vectorstore.as_retriever(search_kwars={'k':3})
+question = '실제 교통 정체상황에서 상호 간섭에 대해서 알려줘'
+# 사용자 질문에 대한 리트리버를 수행 context
+results = retriever.invoke('question')
+print(f"리트리버가 찾은 context 수 : {len(results)}")
+print(results)
+context = '\n\n---\n\n'.join([doc.page_content for doc in results])
+# context로 LLM을 위한 프롬프트 작성
+from langchain_core.prompts import ChatPromptTemplate
+prompt = ChatPromptTemplate.from_template('''
+사용자의 질문에 대한 답을 주어진 context 에서만 찾고 해당 사항이 조금 없으면 관련 없음이라고 출력할것
+context : 
+{context}
+
+사용자 질문 : 
+{question}
+                                        
+출력 :
+''')
+# LLM정의
+llm = ChatOpenAI(model='gpt-4o-mini', temperature=0)
+from langchain_core.output_parsers import StrOutputParser
+# 체인
+chain = prompt | llm | StrOutputParser() 
+# 실행
+result = chain.invoke({"context": context, "question": question})
+print(f"LLM이 찾은 정답 : {result}")
+
+# step2  랭그래프를 이용한 RAG
+
+
+
