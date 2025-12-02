@@ -33,7 +33,7 @@ class CGRAState(TypedDict):
     answer : str
     grade_results : List[str]   #각 문서의 평가 결과
 
-# 문서
+# Step 1 문서
 path = r'C:/Users/playdata2/Desktop/LLM/LLM3/advenced/sample_docs'
 loader = DirectoryLoader(
     path = path,
@@ -43,19 +43,20 @@ loader = DirectoryLoader(
 )
 docs = loader.load()
 
-# 텍스트 분할
+# Step 2 텍스트 분할 (청크)
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=300, chunk_overlap = 50
 )
 doc_splits = text_splitter.split_documents(docs)
-# 임베딩 및 VectorDB
+
+# Step 3 임베딩 및 VectorDB
 vectorstore = Chroma.from_documents(
     documents=doc_splits,
     collection_name='crag_collection',
     embedding=OpenAIEmbeddings(model='text-embedding-3-small')
 )
 
-# 리트리버 설정 
+# Step 4 리트리버 설정 
 retriever = vectorstore.as_retriever(search_kwargs={'k':3})
 
 print(f' {len(doc_splits)}개 청크로 VectorDB 구축 완료')
@@ -146,9 +147,9 @@ def web_search_node(state: CGRAState) -> dict:
     
     # 웹 검색 시뮬레이션 (실제로는 Tavily API 등 사용)
     # 실제 구현 예시:
-    # from langchain_community.tools.tavily_search import TavilySearchResults
-    # web_search = TavilySearchResults(k=3)
-    # web_results = web_search.invoke({"query": question})
+    from langchain_community.retrievers import TavilySearchAPIRetriever
+    web_search = TavilySearchAPIRetriever(k=3)
+    web_results = web_search.invoke(question)
     
     # 시뮬레이션된 웹 검색 결과
     simulated_web_results = f"""
@@ -177,7 +178,11 @@ def web_search_node(state: CGRAState) -> dict:
     
     # 기존 필터링된 문서에 웹 검색 결과 추가
     filtered_docs = state.get("filtered_documents", [])
-    filtered_docs.append(web_doc)
+    # filtered_docs.append(web_doc)  # 시뮬레이션은 web_doc 사용
+    # api 사용
+    for doc in web_results:        
+        filtered_docs.append(doc)
+
     
     print("   웹 검색 완료! 결과가 문서에 추가됨")
     
