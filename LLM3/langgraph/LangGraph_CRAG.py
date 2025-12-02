@@ -8,13 +8,13 @@ from dotenv import load_dotenv
 
 # LangChain 관련 임포트
 from langchain_core.documents import Document
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
-
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 # LangGraph 관련 임포트
 from langgraph.graph import StateGraph, START, END
 
@@ -22,83 +22,82 @@ from langgraph.graph import StateGraph, START, END
 load_dotenv()
 
 if not os.environ.get('OPENAI_API_KEY'):
-    raise ValueError('key check...')
+    raise ValueError('key check....')
 
 class CGRAState(TypedDict):
     question : str
     documents : List[Document]
-    web_search_needed : str # 웹검색 여부(yes/no)
+    filtered_documents: List[Document] # 관련성 평가를 통과한 문서
+    web_search_needed : str   # 웹검색 여부(yes / no)
     context : str
     answer : str
-    grade_results : List[str] # 각 문서의 평가결과
+    grade_results : List[str]   #각 문서의 평가 결과
 
-# Step 1 문서
-path = 'C:/Users/playdata2/Desktop/LLM/LLM3/advenced/sample_docs'
+# 문서
+path = r'C:/Users/playdata2/Desktop/LLM/LLM3/advenced/sample_docs'
 loader = DirectoryLoader(
     path = path,
     glob = '**/*.txt',
     loader_cls = TextLoader,
-    loader_kwargs = {'encoding': 'utf-8'},
+    loader_kwargs = {'encoding':'utf-8'},        
 )
 docs = loader.load()
 
-# Step 2 텍스트 분할 (청크)
+# 텍스트 분할
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=300, chunk_overlap=50
+    chunk_size=300, chunk_overlap = 50
 )
 doc_splits = text_splitter.split_documents(docs)
-
-# Step 3 임베딩 및 VectorDB
+# 임베딩 및 VectorDB
 vectorstore = Chroma.from_documents(
     documents=doc_splits,
     collection_name='crag_collection',
-    embedding=OpenAIEmbeddings(model='text-emb')
+    embedding=OpenAIEmbeddings(model='text-embedding-3-small')
 )
 
-# Step 4 리트리버 설정
-retriever = vectorstore.as_retriever(search_kwars={'k':3})
+# 리트리버 설정 
+retriever = vectorstore.as_retriever(search_kwargs={'k':3})
 
-print(f'{len(doc_splits)}개 청크로 VectorDB 구축 완료')
+print(f' {len(doc_splits)}개 청크로 VectorDB 구축 완료')
 
 # 문서 관련성 평가를 위한 Grader 정의
 from pydantic import BaseModel, Field
 class GradeDocuments(BaseModel):
     '''문서 관련성 평가 결과를 위한 pydantic 모델'''
-    binary_score:str = Field(description="문서가 질문과 관련이 있으면 'yes', 없으면 'no'")
+    binary_score: str  = Field(description="문서가 질문과 관련이 있으면 'yes, 없으면 no")
 
 # llm
-grader_llm = ChatOpenAI(model='gpt-4o-mini', temperature=0)
-structured_grader = grader_llm.with_structured_output(GradeDocuments)
+grader_llm = ChatOpenAI(model = 'gpt-4o-mini',temperature=0)
+structured_grader =  grader_llm.with_structured_output(GradeDocuments)
 grade_prompt = ChatPromptTemplate.from_messages([
-    ('system', '''당신은 검색된 문서가 사용자의 질문에 답변하는데 관련이 있는지 평가하는 전문가 입니다.
+    ('system','''당신은 검색된 문서가 사용자의 질문에 답변하는데 관련이 있는지 평가하는 전문가 입니다.
      
      평가기준:
      - 문서가 질문의 키워드나 의미와 연관되어 있다면 '관련있음'으로 평가
      - 답변에 도움이 될 가능성이 조금이라도 있다면 '관련있음'
-     - 완전히 무관한 내용이면 '관련없음'
+     - 와전히 무관한 내용이면 '관련없음'
 
-     엄격하게 평가하지 말고, 약간의 연관성이라도 있으면 'yes'를 반환하세요
-     '''),
-     ('human', '''질문:{question}
-      
-      문서내용:
-      {document}
+     엄격하게 평가하지 말고, 약간의 연관성이라도 있으면 'yes'를 반환하세요     
+'''),
+('human','''질문:{question}
+ 
+ 문서내용:
+ {document}
 
-      이 문서가 질문과 관련이 있습니까? 'yes' 또는 'no'로만 답하세요
-      ''')
+ 이 문서가 질문과 관련이 있습니까? 'yes' 또는 'no'로만 답하세요
+ ''')
 ])
 
 document_grader = grade_prompt | structured_grader
 
-def retrieve_node(state: CGRAState) -> dict:
+def retrieve_node(state:CGRAState) -> dict:
     '''내부 문서 검색 노드'''
     question = state['question']
-    documents = retriever.invoke(question)
+    documents =  retriever.invoke(question)
     return {
-        'documents': documents,
-        'question': question
+        'documents':documents,
+        'question' : question
     }
-
 
 def grade_documents_node(state:CGRAState) -> dict:
     '''문서관련성 평가 노드
@@ -192,10 +191,10 @@ def generate_node(state: CGRAState) -> dict:
     답변 생성 노드
     필터링된 문서(내부 문서 + 웹 검색 결과)를 바탕으로 답변을 생성합니다.
     """
-    print("\n   💬 [GENERATE 노드] 답변 생성 중...")
+    print("\n   [GENERATE 노드] 답변 생성 중...")
     
     question = state["question"]
-    filtered_documents = state["filtered_documents"]
+    filtered_documents = state['filtered_documents']
     
     # 컨텍스트 구성
     context = "\n\n---\n\n".join([doc.page_content for doc in filtered_documents])
@@ -292,7 +291,6 @@ workflow.add_edge("generate", END)
 
 # 그래프 컴파일
 app = workflow.compile()
-
 
 # 테스트 시나리오
 test_cases = [
