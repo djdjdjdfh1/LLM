@@ -183,5 +183,5 @@ print('검색 테스트 결과')
 for query in test_texts:
     results = vectorStore.similarity_search(query)
     print(f'\n\n질문 : {query}')
-    print(f'검색결과 : {results[0].metadata.get('topic', 'N/A')}')
+    print(f"검색결과 : {results[0].metadata.get('topic', 'N/A')}")
     print(f'찾은 문장 : {results[0].page_content}')
