@@ -104,8 +104,102 @@ def metadata_tag():
     )
     print('\n 메타데이터와 태그 추가 완료')
 
+# langSmith Client 직접 사용
+def langsmith_client():
+    '''LangSmith client를 직접 사용해서 데이터를 조회'''
+    client = Client()
+    print('\n프로젝트 목록조회')
+    try:
+        projects = client.list_projects(limit=5)
+    except Exception as e:
+        print(f'프로젝트 조회중 오류 발생 : {e}')
+    print('\n최근 실행기록')    
+    try:
+        project_name = os.getenv('LANGCHAIN_PROJECT', 'default')
+        runs = list(client.list_runs(
+            project_name=project_name,
+            limit=5
+        ))
+        if runs:
+            for run in runs:
+                status = 'success' if run.status == 'successs' else 'fail'
+                duration = run.end_time - run.start_time if run.start_time else 'N/A'
+                print(f'    {status} {run.name} | {duration}')
+    except Exception as e:
+        print(f'실행 조회중 오류 발생 : {e}')
+    print('\n langSmith Client 사용 완료')
+
+def dataset_evaluation():
+    '''langSmith에서 평가용 데이터셋을 생성하고 모델을 평가'''
+    client = Client()
+    # 데이터셋이름 생성(고유하게)
+    dataset_name = f"qa_eval_dataset_{datetime.now().strftime('%Y%M%d_%H%m%S')}"
+    print(f'\n 데이터셋 생성: {dataset_name}')
+
+    try:
+        dataset = client.create_dataset(
+            dataset_name=dataset_name,
+            description='QA 시스템 평가용 데이터셋'
+        )
+        # 평가용 예제
+        examples = [
+            {
+                "inputs": {"question": "Python이란 무엇인가요?"},
+                "outputs": {"answer": "Python은 프로그래밍 언어입니다."}
+            },
+            {
+                "inputs": {"question": "1+1은?"},
+                "outputs": {"answer": "2입니다."}
+            },
+            {
+                "inputs": {"question": "AI란?"},
+                "outputs": {"answer": "인공지능입니다."}
+            }
+        ]
+        for ex in examples:
+            client.create_example(
+                inputs=ex['inputs'],
+                outputs=ex['outputs'],
+                dataset_id=dataset.id
+            )
+        print(f'    {len(examples)}개 예제 추가 완료')
+        # 데이터셋 생성 내용 확인
+        print('데이터셋 생성 내용 확인')
+        saved_examples = client.list_examples(dataset_id=dataset.id)
+        for i, ex in enumerate(saved_examples,1):
+            question = ex.inputs.get('question', 'N/A')
+            print(f'    {i} {question}')
+
+        # 테스트 로직
+        from langsmith.evaluation import evaluate
+        client = Client()
+        # 평가모델 정의
+        llm = ChatOpenAI(model='gpt-4o-mini', temperature=0)
+        # 평가 함수 실행
+        def predict(inputs:str)->Dict[str, str]:
+            q = inputs['question']
+            result = llm.invoke(f'{q} 간단히 답해줘')
+            return {'answer' : result.content}
+        # 평가실행
+        results = evaluate(
+            dataset_name=dataset_name,
+            model=predict,
+            evaluators=['qa'] # langsmith 내장 평가기
+        )
+        print('\n 평가 결과 요약')
+        print(results['suammary'])
+
+        # 정리 (테스트 후 삭제)
+        client.delete_dataset(dataset_id=dataset.id)
+        print(' 데이터셋 삭제완료')
+
+    except Exception as e:
+        print(f' 평가용 데이터셋 오류발생 : {e}')
+
 if __name__ == '__main__':
-    check_environment()  # 환경체크
-    auto_tracing() # 자동 추적
-    traceable_decorator() # 커스텀 함수 추적
-    metadata_tag() # 메타데이터와 태그 추가
+    check_environment()  #  환경체크
+    # auto_tracing() # 자동 추적
+    # traceable_decorator() # 커스텀 함수 추적
+    # metadata_tag() # 메타데이터 와 태그 추가
+    # langsmith_client()  # 데이터조회  client 사용
+    dataset_evaluation()
