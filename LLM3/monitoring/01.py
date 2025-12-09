@@ -77,45 +77,449 @@ class LocalTraceDB:
 
     def start_run(self, name:str, run_type:str, input_data:Any, metadata:Dict=None) -> str:
         '''새 실행 시작'''
-        run_id = str(uuid.uuid4)
+        run_id = str(uuid.uuid4())
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO runs(id, name, run_type, start_time, input_data, metadata, status)
-                       values(?,?,?,?,?,?,?)''',
-                       (
-                           run_id, name, run_type, datetime.now().isoformat(),
-                           json.dumps(input_data, ensure_ascii=False) if input_data else None,
-                           json.dumps(metadata, ensure_ascii=False) if metadata else None,
-                            'running'
+            INSERT INTO runs(id, name, run_type, start_time, input_data, metadata,status)
+                       values(?,?,?,?,?,?,?)'''
+                       ,(
+                        run_id,name,run_type,datetime.now().isoformat(),
+                        json.dumps(input_data, ensure_ascii=False) if input_data else None,
+                        json.dumps(metadata, ensure_ascii=False) if input_data else None,   
+                        'running'
                        ))
         conn.commit()
         conn.close()
+        return run_id
+    
     def end_run(self, run_id:str, output_data:Any, status:str='success', error:str=None):
-        '''실행 완료'''
+        '''실행완료'''
         conn=sqlite3.connect(self.db_path)
-        cursor=conn.cursor()
-        # 시작시간 가져오기
-        cursor.execute('SELECT start_time FROM runs WHERE ID = ?', (run_id))
+        cursor = conn.cursor()
+        #시작시간 가져오기
+        cursor.execute('SELECT start_time FROM runs WHERE ID = ?', (run_id,))
         result = cursor.fetchone()
         if result:
             start_time = datetime.fromisoformat(result[0])
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
-            cursor.excute('''
-                Update runs
-                          SET end_time = ?, duration_seconds=?, output_data=?, statis=?, error=?,
-                          WHERE id=?''',
-                          (
-                              end_time.isoformat(),
-                              duration,
-                              json.dumps(output_data, ensure_ascii=False) if output_data else None,
-                              status,
-                              error,
-                              run_id
-                          ))
+            cursor.execute('''
+                UPDATE runs
+                           SET end_time = ?, duration_seconds=?, output_data=?,status=?,error=?
+                           WHERE id = ?''',
+                           (
+                               end_time.isoformat(),
+                               duration,
+                               json.dumps(output_data,ensure_ascii=False) if output_data else None,
+                               status,
+                               error,
+                               run_id
+                           ))
             conn.commit()
             conn.close()
 
+    def record_token_usage(self, run_id:str, prompt_tokens:int ,completion_tokens:int, model:str='gpt-4o-mini'):
+        '''토큰사용량'''
+        total_tokens = prompt_tokens + completion_tokens
+        # 비용추정( gpt-4o-mini 기준)
+        cost_per_1k_input = 0.00015
+        cost_per_1k_output = 0.0006
+        estimated_cost = (prompt_tokens / 1000*cost_per_1k_input + 
+                          completion_tokens / 1000 * cost_per_1k_output)
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            INSERT INTO token_usage(run_id, prompt_tokens, completion_tokens, total_tokens, estimated_cost, model, recorded_at)
+                       values(?,?,?,?,?,?,?)'''
+                       ,(
+                           run_id,prompt_tokens,completion_tokens,total_tokens,estimated_cost,model,datetime.now().isoformat()
+                       ))
+        conn.commit()
+        conn.close()
+    def record_metric(self, run_id: str, metric_name: str, metric_value: float):
+        """메트릭 기록"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT INTO metrics (run_id, metric_name, metric_value, recorded_at)
+            VALUES (?, ?, ?, ?)
+        """, (run_id, metric_name, metric_value, datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+
+    def get_summary(self) -> Dict:
+        """전체 요약 통계"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # 총 실행 수
+        cursor.execute("SELECT COUNT(*) FROM runs")
+        total_runs = cursor.fetchone()[0]
+        
+        # 평균 응답 시간
+        cursor.execute("SELECT AVG(duration_seconds) FROM runs WHERE status = 'success'")
+        avg_duration = cursor.fetchone()[0] or 0
+        
+        # 성공률
+        cursor.execute("SELECT COUNT(*) FROM runs WHERE status = 'success'")
+        success_count = cursor.fetchone()[0]
+        success_rate = (success_count / total_runs * 100) if total_runs > 0 else 0
+        
+        # 총 토큰 사용량
+        cursor.execute("SELECT SUM(total_tokens), SUM(estimated_cost) FROM token_usage")
+        token_result = cursor.fetchone()
+        total_tokens = token_result[0] or 0
+        total_cost = token_result[1] or 0
+        
+        conn.close()
+        
+        return {
+            "total_runs": total_runs,
+            "avg_duration_seconds": round(avg_duration, 2),
+            "success_rate": round(success_rate, 1),
+            "total_tokens": total_tokens,
+            "total_estimated_cost": round(total_cost, 4)
+        }
+    
+    def get_recent_runs(self, limit: int = 10) -> List[Dict]:
+        """최근 실행 기록"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, name, run_type, start_time, duration_seconds, status
+            FROM runs
+            ORDER BY start_time DESC
+            LIMIT ?
+        """, (limit,))
+        
+        runs = []
+        for row in cursor.fetchall():
+            runs.append({
+                "id": row[0][:8] + "...",  # 짧게 표시
+                "name": row[1],
+                "type": row[2],
+                "time": row[3][:19] if row[3] else None,
+                "duration": f"{row[4]:.2f}s" if row[4] else None,
+                "status": row[5]
+            })
+        
+        conn.close()
+        return runs
+
+#콜벡핸들러
+class LocalMonitoringHandler(BaseCallbackHandler):
+    '''로컬모니터링을 위한 콜백 핸들러
+    모든 llm 호출을 로컬 SQLite3 DB에 기록'''
+    def __init__(self,trace_db:LocalTraceDB, log_to_console:bool = True):
+        self.trace_db = trace_db
+        self.log_to_console = log_to_console
+        self.current_run_id = None
+        self.start_time = None
+    def on_llm_start(self, serialized:Dict[str, Any], prompts:List[str], **kwargs):
+        '''LLM 호출 시작'''
+        print('''LLM 호출 시작''')
+        self.start_time = datetime.now()
+        model_name = serialized.get('name','UnKown')
+        # db에 실행시간 기록
+        self.current_run_id = self.trace_db.start_run(
+            name = f'llm_call_{model_name}',
+            run_type='llm',
+            input_data={'prompts':prompts[:1]},
+            metadata={'model':model_name}
+        )
+        if self.log_to_console:
+            print(f"    llm 호출시작        : {self.start_time.strftime('%H:%M:%S')}")
+            print(f"    모델               : {model_name}")
+            print(f"    프롬프트길이        : {len(prompts[0])}")
+    def on_llm_end(self, response,  **kwargs):
+        '''llm 호출 완료'''
+        print('''llm 호출 완료''')
+        end_time = datetime.now()
+        duration = (end_time - self.start_time).total_seconds()
+        
+        # 토큰 사용량 추출
+        token_usage = {}
+        if hasattr(response, 'llm_output') and response.llm_output:
+            token_usage = response.llm_output.get('token_usage', {})
+        
+        # 출력 텍스트 추출
+        output_text = ""
+        if response.generations:
+            output_text = response.generations[0][0].text if response.generations[0] else ""
+        
+        # DB에 기록
+        if self.current_run_id:
+            self.trace_db.end_run(
+                self.current_run_id,
+                output_data={"response": output_text[:500]},  # 처음 500자만
+                status="success"
+            )
+            
+            # 토큰 사용량 기록
+            if token_usage:
+                self.trace_db.record_token_usage(
+                    self.current_run_id,
+                    token_usage.get('prompt_tokens', 0),
+                    token_usage.get('completion_tokens', 0)
+                )
+            
+            # 응답 시간 메트릭
+            self.trace_db.record_metric(
+                self.current_run_id, "latency_seconds", duration
+            )
+        
+        if self.log_to_console:
+            print(f"   LLM 호출 완료: {duration:.2f}초 소요")
+            if token_usage:
+                print(f"      입력 토큰: {token_usage.get('prompt_tokens', 'N/A')}")
+                print(f"      출력 토큰: {token_usage.get('completion_tokens', 'N/A')}")
+    
+    def on_llm_error(self, error: Exception, **kwargs):
+        """LLM 오류 발생"""
+        if self.current_run_id:
+            self.trace_db.end_run(
+                self.current_run_id,
+                output_data=None,
+                status="error",
+                error=str(error)
+            )
+        
+        if self.log_to_console:
+            print(f"    LLM 오류: {error}")
+    
+    def on_chain_start(self, serialized: Dict[str, Any], inputs: Dict[str, Any], **kwargs):
+        """체인 시작"""
+        if self.log_to_console:
+            chain_name = serialized.get('name', 'Unknown')
+            print(f"\n    체인 시작: {chain_name}")
+    
+    def on_chain_end(self, outputs: Dict[str, Any], **kwargs):
+        """체인 완료"""
+        if self.log_to_console:
+            print(f"    체인 완료")
+    
+    def on_retriever_start(self, serialized: Dict[str, Any], query: str, **kwargs):
+        """리트리버 시작"""
+        if self.log_to_console:
+            print(f"\n    검색 시작: '{query[:50]}...'")
+    
+    def on_retriever_end(self, documents: List[Document], **kwargs):
+        """리트리버 완료"""
+        if self.log_to_console:
+            print(f"    검색 완료: {len(documents)}개 문서 반환")    
+
+class LocalMonitoringHandler(BaseCallbackHandler):
+    """
+    로컬 모니터링을 위한 콜백 핸들러
+    
+    모든 LLM 호출을 로컬 SQLite DB에 기록합니다.
+    """
+    
+    def __init__(self, trace_db: LocalTraceDB, log_to_console: bool = True):
+        self.trace_db = trace_db
+        self.log_to_console = log_to_console
+        self.current_run_id = None
+        self.start_time = None
+        
+    def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], **kwargs):
+        """LLM 호출 시작"""
+        self.start_time = datetime.now()
+        model_name = serialized.get("name", "Unknown")
+        
+        # DB에 실행 기록 시작
+        self.current_run_id = self.trace_db.start_run(
+            name=f"llm_call_{model_name}",
+            run_type="llm",
+            input_data={"prompts": prompts[:1]},  # 첫 프롬프트만 저장
+            metadata={"model": model_name}
+        )
+        
+        if self.log_to_console:
+            print(f"\n   LLM 호출 시작: {self.start_time.strftime('%H:%M:%S')}")
+            print(f"      모델: {model_name}")
+            print(f"      프롬프트 길이: {len(prompts[0])}자")
+    
+    def on_llm_end(self, response, **kwargs):
+        """LLM 호출 완료"""
+        end_time = datetime.now()
+        duration = (end_time - self.start_time).total_seconds()
+        
+        # 토큰 사용량 추출
+        token_usage = {}
+        if hasattr(response, 'llm_output') and response.llm_output:
+            token_usage = response.llm_output.get('token_usage', {})
+        
+        # 출력 텍스트 추출
+        output_text = ""
+        if response.generations:
+            output_text = response.generations[0][0].text if response.generations[0] else ""
+        
+        # DB에 기록
+        if self.current_run_id:
+            self.trace_db.end_run(
+                self.current_run_id,
+                output_data={"response": output_text[:500]},  # 처음 500자만
+                status="success"
+            )
+            
+            # 토큰 사용량 기록
+            if token_usage:
+                self.trace_db.record_token_usage(
+                    self.current_run_id,
+                    token_usage.get('prompt_tokens', 0),
+                    token_usage.get('completion_tokens', 0)
+                )
+            
+            # 응답 시간 메트릭
+            self.trace_db.record_metric(
+                self.current_run_id, "latency_seconds", duration
+            )
+        
+        if self.log_to_console:
+            print(f"   LLM 호출 완료: {duration:.2f}초 소요")
+            if token_usage:
+                print(f"      입력 토큰: {token_usage.get('prompt_tokens', 'N/A')}")
+                print(f"      출력 토큰: {token_usage.get('completion_tokens', 'N/A')}")
+    
+    def on_llm_error(self, error: Exception, **kwargs):
+        """LLM 오류 발생"""
+        if self.current_run_id:
+            self.trace_db.end_run(
+                self.current_run_id,
+                output_data=None,
+                status="error",
+                error=str(error)
+            )
+        
+        if self.log_to_console:
+            print(f"   LLM 오류: {error}")
+    
+    def on_chain_start(self, serialized: Dict[str, Any], inputs: Dict[str, Any], **kwargs):
+        """체인 시작"""
+        if self.log_to_console:
+            chain_name = serialized.get('name', 'Unknown')
+            print(f"\n    체인 시작: {chain_name}")
+    
+    def on_chain_end(self, outputs: Dict[str, Any], **kwargs):
+        """체인 완료"""
+        if self.log_to_console:
+            print(f"    체인 완료")
+    
+    def on_retriever_start(self, serialized: Dict[str, Any], query: str, **kwargs):
+        """리트리버 시작"""
+        if self.log_to_console:
+            print(f"\n    검색 시작: '{query[:50]}...'")
+    
+    def on_retriever_end(self, documents: List[Document], **kwargs):
+        """리트리버 완료"""
+        if self.log_to_console:
+            print(f"    검색 완료: {len(documents)}개 문서 반환")
+
+        
+
+
+
 if __name__ == '__main__':
-    LocalTraceDB()
+    load_dotenv()
+    # 로컬 모니터링 적용 RAG 체인
+    print('sqllite 데이터베이스 초기중.......')
+    trace_db = LocalTraceDB()
+    print('sqllite 데이터베이스 초기화 완료')
+
+    # 콜백핸들러 인스턴스(객체) 생성    
+    monitoring_handler = LocalMonitoringHandler(trace_db=trace_db)
+    # llm 설정(콜백포함)
+    llm = ChatOpenAI(model = 'gpt-4o-mini',callbacks=[monitoring_handler])
+    # 프롬프트 템플릿
+    prompt = ChatPromptTemplate.from_messages([
+     ('system','''당신은 llm 모니터링 전문가입니다. 제공된 문맥을 바탕으로 질문에 답변하세요
+      
+      규칙:
+      1. 문맥에 있는 정보만 사용하세요
+      2. 한국어로 명확하게 답변하세요
+      3. 구조화된 형태로 답변하세요'''),
+     ('human','''문맥:
+      {context}
+      
+      질문:{question}
+      
+      답변:''')   
+    ])
+    def format_docs(docs:List[Document])->str:
+        return '\n\n'.join([  doc.page_content for doc in docs ])
+    
+    documents = [
+        Document(
+            page_content="로컬 모니터링은 외부 서비스 없이 LLM 애플리케이션을 추적하는 방법입니다. "
+                        "SQLite를 사용하여 모든 실행 기록을 로컬에 저장할 수 있습니다.",
+            metadata={"source": "local_monitoring_intro", "topic": "모니터링"}
+        ),
+        Document(
+            page_content="커스텀 콜백 핸들러의 장점: 1) 완전한 제어 가능, 2) 무료, 3) 오프라인 작동, "
+                        "4) 데이터 프라이버시 보장, 5) 커스터마이징 용이",
+            metadata={"source": "callback_benefits", "topic": "콜백"}
+        ),
+        Document(
+            page_content="SQLite 기반 추적의 장점: 파일 하나로 모든 데이터 관리, 설치 불필요, "
+                        "SQL로 복잡한 분석 가능, 백업 및 이동 용이",
+            metadata={"source": "sqlite_benefits", "topic": "저장소"}
+        ),
+        Document(
+            page_content="LLM 모니터링 핵심 메트릭: 응답 시간(Latency), 토큰 사용량(Token Usage), "
+                        "성공률(Success Rate), 비용(Cost), 오류율(Error Rate)",
+            metadata={"source": "metrics", "topic": "메트릭"}
+        ),
+        Document(
+            page_content="로컬 모니터링 vs 클라우드 모니터링: 로컬은 무료/프라이버시 보장, "
+                        "클라우드는 협업/고급분석 용이. 개발 단계에서는 로컬, 프로덕션에서는 클라우드 권장",
+            metadata={"source": "comparison", "topic": "비교"}
+        ),
+    ]
+
+    embeddings = OpenAIEmbeddings(model = 'text-embedding-3-small')
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=50)
+    doc_chunks = text_splitter.split_documents(documents)
+
+    vectorstore = Chroma.from_documents(
+        documents=doc_chunks,
+        collection_name='local_monitorings',
+        embedding=embeddings
+    )
+    retriever = vectorstore.as_retriever(search_kwargs={'k':3})
+    # RAG 체인 구성
+    rag_chain = (
+        {'context':retriever | RunnableLambda(format_docs),
+         'question' : RunnablePassthrough()
+         }
+         | prompt
+         | llm
+         | StrOutputParser()
+    )
+
+    # 테스트 문장
+    test_questions = [
+        "로컬 모니터링의 장점은 무엇인가요?",
+        "LLM 모니터링에서 중요한 메트릭은 무엇인가요?",
+        "SQLite 기반 추적의 이점은?"
+    ]
+    # 체인 실행
+    for question in test_questions:
+        print(f'질문 : {question}')
+        answer = rag_chain.invoke(question)
+        print(f'답변 : {answer}\n')
+
+    # 모니터링 - 요약통계
+    summary = trace_db.get_summary()
+    print(f' 요약통계 : \n{summary}\n\n')
+
+    # 최근실행 기록
+    recuent_runs = trace_db.get_recent_runs(5)    
+    for id, run in enumerate(recuent_runs,1):
+        print(f'{id} : {run}')
+
+
