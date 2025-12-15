@@ -279,5 +279,5 @@ def demo_cls_attention_visualization(is_dummy:bool = True, url:str = None,image_
 if __name__=='__main__':
 #    main()
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
-    url = 'C:/2.Lecture/LLM2/multomodal/1.basic/img/Cat03.jpg'
+    url = 'C:/Users/playdata2/Desktop/LLM/multimodal/1.basic/img/Cat03.jpg'
     demo_cls_attention_visualization(False, url=url)
